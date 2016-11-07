@@ -109,7 +109,8 @@ options:
     required: false
     default: no
     choices: [ "yes", "no" ]
-    version_added: "2.3"
+    aliases: [ 'autoclean']
+    version_added: "2.1"
   only_upgrade:
     description:
       - Only install/upgrade a package if it is already installed.
@@ -847,7 +848,7 @@ def main():
             dpkg_options = dict(default=DPKG_OPTIONS),
             only_upgrade = dict(type='bool', default=False),
             allow_unauthenticated = dict(default='no', aliases=['allow-unauthenticated'], type='bool'),
-            autoremove = dict(default='no', type='bool'),
+            autoremove = dict(default='no', type='bool',  aliases=['autoclean']),
         ),
         mutually_exclusive = [['package', 'upgrade', 'deb']],
         required_one_of = [['package', 'upgrade', 'update_cache', 'deb']],
