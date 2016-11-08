@@ -108,7 +108,6 @@ options:
     required: false
     default: no
     choices: [ "yes", "no" ]
-    aliases: [ 'autoclean']
     version_added: "2.1"
   only_upgrade:
     description:
@@ -116,6 +115,15 @@ options:
     required: false
     default: false
     version_added: "2.1"
+  clean:
+    description:
+      - Clears out the local repository of retrieved package files.
+      - If auto, performs apt-get autoclean.
+    required: falise
+    default: no
+    choices: ["yes", "no", "auto"]
+    aliases: [ 'autoclean']
+    version_added: "2.3"
 requirements:
    - python-apt (python 2)
    - python3-apt (python 3)
@@ -191,6 +199,10 @@ EXAMPLES = '''
 - name: Install a .deb package from the internet.
   apt:
     deb: https://example.com/python-ppq_0.1-1_all.deb
+
+- name: Clears out the local repository of retrieved package files that can no longer be downloaded.
+  apt:
+    clean: "auto"
 '''
 
 RETURN = '''
@@ -250,6 +262,8 @@ APT_GET_ZERO = "\n0 upgraded, 0 newly installed"
 APTITUDE_ZERO = "\n0 packages upgraded, 0 newly installed"
 APT_LISTS_PATH = "/var/lib/apt/lists"
 APT_UPDATE_SUCCESS_STAMP_PATH = "/var/lib/apt/periodic/update-success-stamp"
+APT_CACHE_ARCHIVE_PATH = "/var/cache/apt/archives"
+APT_CACHE_PARTIAL_ARCHIVE_PATH = APT_CACHE_ARCHIVE_PATH + "/partial"
 
 HAS_PYTHON_APT = True
 try:
@@ -605,6 +619,42 @@ def install_deb(m, debs, cache, force, install_recommends, allow_unauthenticated
     else:
         m.exit_json(changed=changed, stdout=retvals.get('stdout',''), stderr=retvals.get('stderr',''), diff=retvals.get('diff', ''))
 
+def clean(m, mode="no", dpkg_options=expand_dpkg_options(DPKG_OPTIONS)):
+
+    apt_cmd = APT_GET_CMD
+    apt_cmd_path = m.get_bin_path(apt_cmd, required=True)
+
+    stat_cache_before = [st.st_ctime for st in
+                        [os.stat(APT_CACHE_ARCHIVE_PATH),
+                         os.stat(APT_CACHE_PARTIAL_ARCHIVE_PATH)]]
+
+    if m.check_mode:
+        check_arg = '--simulate'
+    else:
+        check_arg = ''
+
+    if mode == "auto":
+        # apt-get autoclean
+        clean_command = "autoclean"
+    else:
+        # apt-get clean
+        clean_command = "clean"
+
+    cmd = '%s -y %s %s %s' % (apt_cmd_path, dpkg_options,
+                              check_arg, clean_command)
+
+    rc, out, err = m.run_command(cmd)
+
+    stat_cache_after = [st.st_ctime for st in
+                       [os.stat(APT_CACHE_ARCHIVE_PATH),
+                        os.stat(APT_CACHE_PARTIAL_ARCHIVE_PATH)]]
+
+    if rc:
+        m.fail_json(msg="'%s %s' failed: %s" % (apt_cmd, clean_command, err))
+    # because no output is provided, check if the dir metadata has changed.
+    if stat_cache_before[0] != stat_cache_after[0] or stat_cache_before[1] != stat_cache_after[1]:
+        m.exit_json(changed=True, stderr=err)
+    m.exit_json(changed=False, stderr=err)
 
 def remove(m, pkgspec, cache, purge=False, force=False,
            dpkg_options=expand_dpkg_options(DPKG_OPTIONS), autoremove=False):
@@ -794,12 +844,13 @@ def main():
             force = dict(default='no', type='bool'),
             upgrade = dict(choices=['no', 'yes', 'safe', 'full', 'dist']),
             dpkg_options = dict(default=DPKG_OPTIONS),
-            autoremove = dict(type='bool', default=False, aliases=['autoclean']),
+            autoremove = dict(type='bool', default=False),
             only_upgrade = dict(type='bool', default=False),
             allow_unauthenticated = dict(default='no', aliases=['allow-unauthenticated'], type='bool'),
+            clean = dict(choices=['no', 'yes', 'auto'], aliases=['autoclean']),
         ),
-        mutually_exclusive = [['package', 'upgrade', 'deb']],
-        required_one_of = [['package', 'upgrade', 'update_cache', 'deb']],
+        mutually_exclusive = [['package', 'upgrade', 'deb', 'clean']],
+        required_one_of = [['package', 'upgrade', 'update_cache', 'deb', 'clean']],
         supports_check_mode = True
     )
 
@@ -829,6 +880,8 @@ def main():
 
     if p['upgrade'] == 'no':
         p['upgrade'] = None
+    if p['clean'] == 'no':
+        p['clean'] = None
 
     if not APTITUDE_CMD and p.get('upgrade', None) in [ 'full', 'safe', 'yes' ]:
         module.fail_json(msg="Could not find aptitude. Please ensure it is installed.")
@@ -881,12 +934,16 @@ def main():
 
             # If there is nothing else to do exit. This will set state as
             #  changed based on if the cache was updated.
-            if not p['package'] and not p['upgrade'] and not p['deb']:
+            if not p['package'] and not p['upgrade'] \
+              and not p['deb'] and not p['clean']:
                 module.exit_json(
                     changed=updated_cache,
                     cache_updated=updated_cache,
                     cache_update_time=updated_cache_time
                 )
+
+        if p['clean']:
+            clean(module, p['clean'], dpkg_options)
 
         force_yes = p['force']
 
