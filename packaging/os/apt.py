@@ -119,8 +119,8 @@ options:
     description:
       - Clears out the local repository of retrieved package files.
       - If auto, performs apt-get autoclean.
-    required: falise
-    default: no
+    required: false
+    default: "no"
     choices: ["yes", "no", "auto"]
     aliases: [ 'autoclean']
     version_added: "2.3"
@@ -847,7 +847,7 @@ def main():
             autoremove = dict(type='bool', default=False),
             only_upgrade = dict(type='bool', default=False),
             allow_unauthenticated = dict(default='no', aliases=['allow-unauthenticated'], type='bool'),
-            clean = dict(choices=['no', 'yes', 'auto'], aliases=['autoclean']),
+            clean = dict(default=None, choices=['no', 'yes', 'auto'], aliases=['autoclean']),
         ),
         mutually_exclusive = [['package', 'upgrade', 'deb', 'clean']],
         required_one_of = [['package', 'upgrade', 'update_cache', 'deb', 'clean']],
