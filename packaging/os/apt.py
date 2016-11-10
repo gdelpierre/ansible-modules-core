@@ -104,12 +104,12 @@ options:
      version_added: "1.6"
   autoremove:
     description:
-      - If C(yes), remove all unused dependency packages for all module states.
-      - If C(yes) and package(s) name are provided, remove all provided package(s) with unused dependency.
+      - If C(yes), remove unused dependency packages for all module states except I(build-dep).
     required: false
     default: no
     choices: [ "yes", "no" ]
-    version_added: "2.3"
+    aliases: [ 'autoclean']
+    version_added: "2.1"
   only_upgrade:
     description:
       - Only install/upgrade a package if it is already installed.
@@ -191,9 +191,6 @@ EXAMPLES = '''
 - name: Install a .deb package from the internet.
   apt:
     deb: https://example.com/python-ppq_0.1-1_all.deb
-- name: Autoremove all unused dependency.
-  apt:
-     autoremove: "yes"
 '''
 
 RETURN = '''
@@ -250,9 +247,7 @@ APT_ENV_VARS = dict(
 
 DPKG_OPTIONS = 'force-confdef,force-confold'
 APT_GET_ZERO = "\n0 upgraded, 0 newly installed"
-APT_AUTORM_GET_ZERO = "\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded"
 APTITUDE_ZERO = "\n0 packages upgraded, 0 newly installed"
-APTITUDE_AUTORM_GET_ZERO = "\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded"
 APT_LISTS_PATH = "/var/lib/apt/lists"
 APT_UPDATE_SUCCESS_STAMP_PATH = "/var/lib/apt/periodic/update-success-stamp"
 
@@ -451,7 +446,7 @@ def parse_diff(output):
 def install(m, pkgspec, cache, upgrade=False, default_release=None,
             install_recommends=None, force=False,
             dpkg_options=expand_dpkg_options(DPKG_OPTIONS),
-            build_dep=False, only_upgrade=False,
+            build_dep=False, autoremove=False, only_upgrade=False,
             allow_unauthenticated=False):
     pkg_list = []
     packages = ""
@@ -487,6 +482,11 @@ def install(m, pkgspec, cache, upgrade=False, default_release=None,
         else:
             check_arg = ''
 
+        if autoremove:
+            autoremove = '--auto-remove'
+        else:
+            autoremove = ''
+
         if only_upgrade:
             only_upgrade = '--only-upgrade'
         else:
@@ -495,7 +495,7 @@ def install(m, pkgspec, cache, upgrade=False, default_release=None,
         if build_dep:
             cmd = "%s -y %s %s %s %s build-dep %s" % (APT_GET_CMD, dpkg_options, only_upgrade, force_yes, check_arg, packages)
         else:
-            cmd = "%s -y %s %s %s %s install %s" % (APT_GET_CMD, dpkg_options, only_upgrade, force_yes, check_arg, packages)
+            cmd = "%s -y %s %s %s %s %s install %s" % (APT_GET_CMD, dpkg_options, only_upgrade, force_yes, autoremove, check_arg, packages)
 
         if default_release:
             cmd += " -t '%s'" % (default_release,)
@@ -605,67 +605,9 @@ def install_deb(m, debs, cache, force, install_recommends, allow_unauthenticated
     else:
         m.exit_json(changed=changed, stdout=retvals.get('stdout',''), stderr=retvals.get('stderr',''), diff=retvals.get('diff', ''))
 
-def autoremove(m, pkgspec, cache, purge=False, force=False,
-           dpkg_options=expand_dpkg_options(DPKG_OPTIONS)):
-    # https://github.com/ansible/ansible-modules-core/issues/4029
-    pkg_list = []
-    try:
-        pkgspec = expand_pkgspec_from_fnmatches(m, pkgspec, cache)
-        for package in pkgspec:
-            name, version = package_split(package)
-            installed, upgradable, has_files = package_status(m, name, version, cache, state='remove')
-            if installed or (has_files and purge):
-                pkg_list.append("'%s'" % package)
-        packages = ' '.join(pkg_list)
-    except:
-        packages = ""
-
-    if force:
-        force_yes = '--force-yes'
-    else:
-        force_yes = ''
-
-    if purge:
-        purge = '--purge'
-    else:
-        purge = ''
-
-    if m.check_mode:
-        check_arg = '--simulate'
-    else:
-        check_arg = ''
-
-    if len(packages) == 0:
-        cmd = "%s -q -y %s %s %s %s autoremove" % (APT_GET_CMD, dpkg_options, purge, force_yes , check_arg)
-
-        rc, out, err = m.run_command(cmd)
-        if m._diff:
-            diff = parse_diff(out)
-        else:
-            diff = {}
-        if rc:
-            m.fail_json(msg="'apt-get autoremove' failed: %s" % (err), stdout=out, stderr=err)
-        if (APT_GET_CMD and APT_AUTORM_GET_ZERO in out) or (APTITUDE_CMD and APTITUDE_ZERO in out):
-            m.exit_json(changed=False, stdout=out, stderr=err)
-        m.exit_json(changed=True, stdout=out, stderr=err, diff=diff)
-    elif len(packages) > 0:
-        cmd = "%s -q -y %s %s %s %s autoremove %s" % (APT_GET_CMD, dpkg_options, purge, force_yes, check_arg, packages)
-
-        rc, out, err = m.run_command(cmd)
-        if m._diff:
-            diff = parse_diff(out)
-        else:
-            diff = {}
-        if rc:
-            m.fail_json(msg="'apt-get autoremove %s' failed: %s" % (packages, err), stdout=out, stderr=err)
-        if (APT_GET_CMD and APT_AUTORM_GET_ZERO in out) or (APTITUDE_CMD and APTITUDE_ZERO in out):
-            m.exit_json(changed=False, stdout=out, stderr=err)
-        m.exit_json(changed=True, stdout=out, stderr=err, diff=diff)
-    else:
-        m.exit_json(changed=False)
 
 def remove(m, pkgspec, cache, purge=False, force=False,
-           dpkg_options=expand_dpkg_options(DPKG_OPTIONS)):
+           dpkg_options=expand_dpkg_options(DPKG_OPTIONS), autoremove=False):
     pkg_list = []
     pkgspec = expand_pkgspec_from_fnmatches(m, pkgspec, cache)
     for package in pkgspec:
@@ -688,12 +630,17 @@ def remove(m, pkgspec, cache, purge=False, force=False,
         else:
             purge = ''
 
+        if autoremove:
+            autoremove = '--auto-remove'
+        else:
+            autoremove = ''
+
         if m.check_mode:
             check_arg = '--simulate'
         else:
             check_arg = ''
 
-        cmd = "%s -q -y %s %s %s %s %s remove %s" % (APT_GET_CMD, dpkg_options, purge, force_yes , check_arg, packages)
+        cmd = "%s -q -y %s %s %s %s %s remove %s" % (APT_GET_CMD, dpkg_options, purge, force_yes ,autoremove, check_arg, packages)
 
         rc, out, err = m.run_command(cmd)
         if m._diff:
@@ -807,6 +754,7 @@ def get_updated_cache_time():
     updated_cache_time = int(time.mktime(mtimestamp.timetuple()))
     return mtimestamp, updated_cache_time
 
+
 # https://github.com/ansible/ansible-modules-core/issues/2951
 def get_cache(module):
     '''Attempt to get the cache object and update till it works'''
@@ -824,12 +772,13 @@ def get_cache(module):
                 if rc == 0:
                     break
             if rc != 0:
-                module.fail_json(msg='Updating the cache to correct corrupt package lists failed:\n%s\n%s' % (str(e), str(so) + str(se)))
+                module.fail_json(msg='Updating the cache to correct corrupt package lists failed:\n%s\n%s' % (str(e), str(so) + str(se)))    
             # try again
             cache = apt.Cache()
         else:
             module.fail_json(msg=str(e))
     return cache
+ 
 
 def main():
     module = AnsibleModule(
@@ -845,9 +794,9 @@ def main():
             force = dict(default='no', type='bool'),
             upgrade = dict(choices=['no', 'yes', 'safe', 'full', 'dist']),
             dpkg_options = dict(default=DPKG_OPTIONS),
+            autoremove = dict(type='bool', default=False, aliases=['autoclean']),
             only_upgrade = dict(type='bool', default=False),
             allow_unauthenticated = dict(default='no', aliases=['allow-unauthenticated'], type='bool'),
-            autoremove = dict(default='no', type='bool'),
         ),
         mutually_exclusive = [['package', 'upgrade', 'deb']],
         required_one_of = [['package', 'upgrade', 'update_cache', 'deb']],
@@ -889,6 +838,7 @@ def main():
     install_recommends = p['install_recommends']
     allow_unauthenticated = p['allow_unauthenticated']
     dpkg_options = expand_dpkg_options(p['dpkg_options'])
+    autoremove = p['autoremove']
 
     # Deal with deprecated aliases
     if p['state'] == 'installed':
@@ -954,13 +904,6 @@ def main():
                         force=force_yes, dpkg_options=p['dpkg_options'])
 
         packages = p['package']
-
-        if p['autoremove']:
-            if not packages:
-                autoremove(module, cache, p['purge'], force=force_yes, dpkg_options=dpkg_options)
-            else:
-                autoremove(module, packages, cache, p['purge'], force=force_yes, dpkg_options=dpkg_options)
-
         latest = p['state'] == 'latest'
         for package in packages:
             if package.count('=') > 1:
@@ -986,6 +929,7 @@ def main():
                 force=force_yes,
                 dpkg_options=dpkg_options,
                 build_dep=state_builddep,
+                autoremove=autoremove,
                 only_upgrade=p['only_upgrade'],
                 allow_unauthenticated=allow_unauthenticated
             )
@@ -1000,7 +944,7 @@ def main():
             else:
                 module.fail_json(**retvals)
         elif p['state'] == 'absent':
-            remove(module, packages, cache, p['purge'], force=force_yes, dpkg_options=dpkg_options)
+            remove(module, packages, cache, p['purge'], force=force_yes, dpkg_options=dpkg_options, autoremove=autoremove)
 
     except apt.cache.LockFailedException:
         module.fail_json(msg="Failed to lock apt for exclusive operation")
